@@ -15,14 +15,14 @@ Install [uv](https://docs.astral.sh/uv/) once, then:
 
 **macOS / Linux**
 ```bash
-git clone https://github.com/YOUR-ORG/mineru-app && cd mineru-app
+git clone https://github.com/LTAdvancedMaterials/mineru-app && cd mineru-app
 uv sync
 uv run mineru-app
 ```
 
 **Windows (PowerShell)**
 ```powershell
-git clone https://github.com/YOUR-ORG/mineru-app; cd mineru-app
+git clone https://github.com/LTAdvancedMaterials/mineru-app; cd mineru-app
 uv sync
 uv run mineru-app
 ```
