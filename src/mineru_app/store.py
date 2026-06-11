@@ -127,6 +127,8 @@ class Store:
             "markdown_path": store.relativize(result.get("markdown_path")),
             "content_list_path": store.relativize(result.get("content_list_path")),
             "images_dir": store.relativize(result.get("images_dir")),
-            "markdown_chars": len(result.get("markdown", "")),
-            "blocks": len(result.get("content_list", [])),
+            # the worker subprocess sends precomputed counts instead of the
+            # (potentially huge) markdown/content_list payloads
+            "markdown_chars": result.get("markdown_chars", len(result.get("markdown") or "")),
+            "blocks": result.get("blocks", len(result.get("content_list") or [])),
         }

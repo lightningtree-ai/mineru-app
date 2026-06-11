@@ -1,22 +1,30 @@
-"""Job model, single worker thread, and SSE event bus.
+"""Job model, worker subprocess, and SSE event bus.
 
 One job per uploaded file: a batch of 30 PDFs shows per-file progress and one
-failure doesn't abort the rest. A single worker consumes jobs sequentially —
-MinerU's models load once on the first job and stay warm for the process
-lifetime, and sequential execution avoids competing for the GPU.
+failure doesn't abort the rest. Jobs run sequentially in a single long-lived
+**worker subprocess** — MinerU's models load once on the first job and stay
+warm for as long as the worker lives, and sequential execution avoids
+competing for the GPU. Running in a child process (rather than a thread) is
+what makes cancellation possible: terminating the worker kills the inference
+mid-flight and the OS reclaims its GPU memory; a fresh worker is spawned for
+the next job. It also means a hard crash in torch can't take down the server.
 """
 from __future__ import annotations
 
 import contextlib
 import json
+import multiprocessing as mp
 import os
 import queue
 import re
+import signal
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -135,6 +143,93 @@ def _capture_stderr_fd(on_line):
         os.close(saved_fd)
 
 
+def _worker_main(job_q, event_q) -> None:
+    """Worker subprocess: pull job specs, run MinerU, report over event_q.
+
+    Events: ("progress", job_id, line) | ("done", job_id, slim_result)
+          | ("failed", job_id, error_message)
+    """
+    if hasattr(os, "setpgrp"):
+        # Lead our own process group: MinerU spawns helper subprocesses, and on
+        # cancel the server kills the whole group so none of them get orphaned.
+        os.setpgrp()
+
+    from .processing import preprocess  # heavy import happens here, not in the server
+
+    while True:
+        spec = job_q.get()
+        if spec is None:
+            return
+        job_id = spec["id"]
+        last_sent = 0.0
+
+        def on_line(line: str) -> None:
+            nonlocal last_sent
+            now = time.monotonic()
+            if now - last_sent < 0.25:  # cap progress chatter (tqdm refreshes fast)
+                return
+            last_sent = now
+            try:
+                event_q.put_nowait(("progress", job_id, line[:300]))
+            except Exception:
+                pass
+
+        try:
+            opts = dict(spec["options"])
+            device = opts.pop("device", None)
+            with _capture_stderr_fd(on_line):
+                results = preprocess(
+                    [spec["upload_path"]],
+                    output_dir=spec["output_dir"],
+                    device_mode=device,
+                    **opts,
+                )
+            result = results[0]
+            if not result.get("markdown_path"):
+                raise RuntimeError("MinerU produced no markdown output")
+            slim = {k: result.get(k) for k in
+                    ("source", "device", "parse_dir", "markdown_path",
+                     "content_list_path", "images_dir")}
+            slim["markdown_chars"] = len(result.get("markdown") or "")
+            slim["blocks"] = len(result.get("content_list") or [])
+            event_q.put(("done", job_id, slim))
+        except Exception as e:
+            traceback.print_exc()
+            event_q.put(("failed", job_id, f"{type(e).__name__}: {e}"))
+
+
+def _terminate_tree(proc) -> None:
+    """Kill the worker and any helper processes it spawned (its process group)."""
+    if proc is None or not proc.is_alive():
+        return
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        proc.join(timeout=5)
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    own_group = pgid == os.getpgid(0)  # worker hasn't run setpgrp() yet
+    try:
+        if own_group:
+            proc.terminate()
+        else:
+            os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    proc.join(timeout=5)
+    if proc.is_alive():
+        try:
+            if own_group:
+                proc.kill()
+            else:
+                os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        proc.join(timeout=2)
+
+
 class EventBus:
     """Fan-out of job events to SSE subscribers (thread-safe)."""
 
@@ -166,22 +261,29 @@ class JobManager:
         self.bus = EventBus()
         self.device: str | None = None  # set after the first job runs
         self._jobs: dict[str, Job] = {}
-        self._queue: queue.Queue[Job] = queue.Queue()
+        self._pending: deque[str] = deque()
+        self._current: str | None = None  # job id dispatched to the worker
         self._lock = threading.Lock()
-        self._worker: threading.Thread | None = None
+        self._ctx = mp.get_context("spawn")
+        self._proc: mp.process.BaseProcess | None = None
+        self._job_q = None
+        self._event_q = None
+        self._pump_thread: threading.Thread | None = None
+        self._last_prog_pub = 0.0
 
     def start(self) -> None:
-        if self._worker is None:
-            self._worker = threading.Thread(target=self._run, name="mineru-worker", daemon=True)
-            self._worker.start()
+        if self._pump_thread is None:
+            self._pump_thread = threading.Thread(target=self._pump, name="mineru-events", daemon=True)
+            self._pump_thread.start()
 
     def submit(self, doc_id: str, name: str, upload_path: Path, options: dict) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], doc_id=doc_id, name=name,
                   upload_path=str(upload_path), options=options)
         with self._lock:
             self._jobs[job.id] = job
-        self._queue.put(job)
-        self.bus.publish({"type": "job", "job": job.public()})
+            self._pending.append(job.id)
+        self._publish(job)
+        self._dispatch()
         return job
 
     def list_jobs(self) -> list[dict]:
@@ -190,73 +292,147 @@ class JobManager:
         return [j.public() for j in sorted(jobs, key=lambda j: j.queued_at, reverse=True)]
 
     def cancel(self, job_id: str) -> str:
-        """Cancel a queued job. Running jobs can't be interrupted (the model is
-        mid-inference in this process); returns the job's current status."""
+        """Cancel a queued job, or terminate the worker to abort a running one.
+        Returns the job's resulting status ("cancelled" on success)."""
+        proc = None
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return "missing"
-            if job.status != "queued":
+            if job.status == "queued":
+                job.status = "cancelled"
+                job.finished_at = time.time()
+            elif job.status == "running" and self._current == job_id:
+                proc, self._proc = self._proc, None  # next job spawns a fresh worker
+                self._current = None
+                job.status = "cancelled"
+                job.progress = None
+                job.finished_at = time.time()
+            else:
                 return job.status
-            job.status = "cancelled"
-            job.finished_at = time.time()
+        _terminate_tree(proc)
         self._publish(job)
+        self._dispatch()
         return "cancelled"
+
+    def shutdown(self) -> None:
+        """Terminate the worker so the server process can exit cleanly."""
+        with self._lock:
+            proc, self._proc = self._proc, None
+            self._current = None
+        _terminate_tree(proc)
+
+    # -- internals -------------------------------------------------------------
 
     def _publish(self, job: Job) -> None:
         self.bus.publish({"type": "job", "job": job.public()})
 
-    def _run(self) -> None:
-        from .processing import preprocess  # heavy deps load in this thread only
+    def _ensure_worker_locked(self) -> None:
+        if self._proc is not None and self._proc.is_alive():
+            return
+        self._job_q = self._ctx.Queue()
+        self._event_q = self._ctx.Queue()
+        # Not daemonic: torch/MinerU may spawn helper processes, which daemonic
+        # processes are forbidden to do. shutdown() reaps it when the server exits.
+        self._proc = self._ctx.Process(target=_worker_main, args=(self._job_q, self._event_q),
+                                       name="mineru-worker")
+        self._proc.start()
 
-        while True:
-            job = self._queue.get()
-            if job.status != "queued":  # cancelled while waiting
-                continue
+    def _dispatch(self) -> None:
+        """Send the next queued job to the worker if it's idle."""
+        with self._lock:
+            if self._current is not None:
+                return
+            job = None
+            while self._pending:
+                candidate = self._jobs[self._pending.popleft()]
+                if candidate.status == "queued":
+                    job = candidate
+                    break
+            if job is None:
+                return
+            self._ensure_worker_locked()
+            self._current = job.id
             job.status = "running"
             job.started_at = time.time()
-            self._publish(job)
+            job_q = self._job_q
+        job_q.put({
+            "id": job.id,
+            "upload_path": job.upload_path,
+            "output_dir": str(self.store.output_dir(job.doc_id)),
+            "options": job.options,
+        })
+        self._publish(job)
 
-            last_pub = 0.0
-
-            def on_line(line: str, job=job) -> None:
-                nonlocal last_pub
-                job.progress = line[:300]
-                now = time.time()
-                if now - last_pub >= 1.0:  # throttle SSE to ~1/s during bursts
-                    last_pub = now
-                    self._publish(job)
-
+    def _pump(self) -> None:
+        """Consume worker events; detect a worker that died mid-job."""
+        while True:
+            event_q = self._event_q
+            if event_q is None:
+                time.sleep(0.5)
+                continue
             try:
-                opts = dict(job.options)
-                device = opts.pop("device", None)
-                with _capture_stderr_fd(on_line):
-                    results = preprocess(
-                        [job.upload_path],
-                        output_dir=self.store.output_dir(job.doc_id),
-                        device_mode=device,
-                        **opts,
-                    )
-                result = results[0]
-                if not result.get("markdown_path"):
-                    raise RuntimeError("MinerU produced no markdown output")
-                job.device = self.device = result.get("device")
+                kind, job_id, payload = event_q.get(timeout=1.0)
+            except queue.Empty:
+                self._reap_dead_worker()
+                continue
+            except (EOFError, OSError):
+                time.sleep(0.5)
+                continue
+            job = self._jobs.get(job_id)
+            if job is None or job.status != "running":
+                continue  # stale event from a cancelled/terminated run
+
+            if kind == "progress":
+                job.progress = payload
+                now = time.time()
+                if now - self._last_prog_pub >= 1.0:  # throttle SSE during bursts
+                    self._last_prog_pub = now
+                    self._publish(job)
+            elif kind == "done":
+                job.device = self.device = payload.get("device")
                 entry = Store.make_entry(
-                    job.doc_id, job.name, job.options, result,
+                    job.doc_id, job.name, job.options, payload,
                     seconds=time.time() - job.started_at, store=self.store,
                 )
                 self.store.add_doc(entry)
                 job.status = "done"
                 job.progress = None
                 job.finished_at = time.time()
+                with self._lock:
+                    if self._current == job_id:
+                        self._current = None
                 self._publish(job)
                 self.bus.publish({"type": "doc", "doc": entry})
-            except Exception as e:
+                self._dispatch()
+            elif kind == "failed":
                 job.status = "failed"
-                job.error = f"{type(e).__name__}: {e}"
+                job.error = payload
                 job.finished_at = time.time()
-                traceback.print_exc()
+                with self._lock:
+                    if self._current == job_id:
+                        self._current = None
                 self._publish(job)
+                self._dispatch()
+
+    def _reap_dead_worker(self) -> None:
+        with self._lock:
+            proc, job_id = self._proc, self._current
+            if job_id is None or (proc is not None and proc.is_alive()):
+                return
+            self._proc = None
+            self._current = None
+            job = self._jobs.get(job_id)
+            if job is not None and job.status == "running":
+                job.status = "failed"
+                job.error = ("Worker process died unexpectedly "
+                             "(possibly out of memory — try device=cpu or a smaller page range)")
+                job.finished_at = time.time()
+            else:
+                job = None
+        if job is not None:
+            self._publish(job)
+        self._dispatch()
 
 
 def sse_format(event: dict) -> str:

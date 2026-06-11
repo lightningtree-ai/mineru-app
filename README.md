@@ -42,8 +42,10 @@ opens your browser.
    Zotero works great — subfolders are walked recursively).
 2. Tweak **Options** if needed (language, OCR method, page range, formula/table toggles,
    device override). Defaults are right for English scientific PDFs.
-3. **Process** — each file becomes a queue entry with live status. One bad PDF doesn't
-   stop the rest.
+3. **Process** — each file becomes a queue entry with live status and a streaming log
+   line so you can see long jobs making progress. One bad PDF doesn't stop the rest.
+   ✕ cancels a queued job, or terminates a running one (the worker process is killed
+   and respawned, so the models reload for the next job).
 4. Click any finished document to open the viewer:
    - **Markdown** — rendered output with figures and LaTeX math
    - **Side-by-side** — original PDF next to the extraction, for QA

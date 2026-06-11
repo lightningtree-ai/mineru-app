@@ -244,13 +244,17 @@ function renderQueue() {
     chip.className = `chip ${job.status}`;
     chip.textContent = job.status;
     li.append(name, time, chip);
-    if (job.status === "queued") {
+    if (job.status === "queued" || job.status === "running") {
+      const running = job.status === "running";
       const x = document.createElement("button");
       x.className = "job-cancel";
       x.type = "button";
-      x.title = "Cancel this queued job";
+      x.title = running ? "Terminate this run" : "Cancel this queued job";
       x.textContent = "✕";
-      x.addEventListener("click", () => fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" }));
+      x.addEventListener("click", () => {
+        if (running && !confirm(`Terminate "${job.name}"?\n\nThe models will need to reload for the next job.`)) return;
+        fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" });
+      });
       li.appendChild(x);
     }
     ul.appendChild(li);

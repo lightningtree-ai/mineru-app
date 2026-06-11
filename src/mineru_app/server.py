@@ -29,6 +29,7 @@ manager = JobManager(store)
 async def lifespan(app: FastAPI):
     manager.start()
     yield
+    manager.shutdown()
 
 
 app = FastAPI(title="mineru-app", version=__version__, lifespan=lifespan)
@@ -68,7 +69,7 @@ def cancel_job(job_id: str):
     if status == "missing":
         raise HTTPException(404, "Job not found")
     if status != "cancelled":
-        raise HTTPException(409, f"Job is {status}; only queued jobs can be cancelled")
+        raise HTTPException(409, f"Job already {status}")
     return {"ok": True}
 
 
