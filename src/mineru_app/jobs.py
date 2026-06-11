@@ -7,8 +7,9 @@ lifetime, and sequential execution avoids competing for the GPU.
 """
 from __future__ import annotations
 
-import io
+import contextlib
 import json
+import os
 import queue
 import re
 import sys
@@ -87,34 +88,51 @@ class Job:
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
-class _StderrTee(io.TextIOBase):
-    """Mirror stderr while feeding complete lines (or \\r progress-bar refreshes,
-    e.g. tqdm during VLM inference) to a callback, so long MinerU jobs show signs
-    of life in the UI instead of sitting silently on "running" for hours."""
+@contextlib.contextmanager
+def _capture_stderr_fd(on_line):
+    """Tee OS-level stderr (fd 2) through a pipe, feeding complete lines (or \\r
+    progress-bar refreshes, e.g. tqdm during VLM inference) to a callback, so
+    long MinerU jobs show signs of life instead of sitting on "running" for hours.
 
-    def __init__(self, original, on_line):
-        self.original = original
-        self.on_line = on_line
-        self._buf = ""
+    Capturing the file descriptor — not swapping the sys.stderr object — matters:
+    loguru and tqdm grab a reference to the stderr *object* when first imported,
+    so an object swap only ever catches output for the job that triggered the
+    import. Everything ultimately writes to fd 2, which this sees process-wide.
+    """
+    read_fd, write_fd = os.pipe()
+    saved_fd = os.dup(2)
+    sys.stderr.flush()
+    os.dup2(write_fd, 2)
+    os.close(write_fd)
 
-    def write(self, s: str) -> int:
+    def pump():
+        buf = b""
         try:
-            self.original.write(s)
-        except Exception:
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    break
+                os.write(saved_fd, chunk)  # still reaches the real terminal
+                buf += chunk
+                *lines, buf = re.split(rb"[\r\n]", buf)
+                for raw in lines:
+                    line = _ANSI.sub("", raw.decode("utf-8", "replace")).strip()
+                    if line:
+                        on_line(line)
+        except OSError:
             pass
-        self._buf += s
-        *lines, self._buf = re.split(r"[\r\n]", self._buf)
-        for line in lines:
-            line = _ANSI.sub("", line).strip()
-            if line:
-                self.on_line(line)
-        return len(s)
+        finally:
+            os.close(read_fd)
 
-    def flush(self) -> None:
-        try:
-            self.original.flush()
-        except Exception:
-            pass
+    pump_thread = threading.Thread(target=pump, name="stderr-pump", daemon=True)
+    pump_thread.start()
+    try:
+        yield
+    finally:
+        sys.stderr.flush()
+        os.dup2(saved_fd, 2)  # closes the pipe's last write end -> pump sees EOF
+        pump_thread.join(timeout=2)
+        os.close(saved_fd)
 
 
 class EventBus:
@@ -209,17 +227,16 @@ class JobManager:
                     last_pub = now
                     self._publish(job)
 
-            orig_stderr = sys.stderr
-            sys.stderr = _StderrTee(orig_stderr, on_line)
             try:
                 opts = dict(job.options)
                 device = opts.pop("device", None)
-                results = preprocess(
-                    [job.upload_path],
-                    output_dir=self.store.output_dir(job.doc_id),
-                    device_mode=device,
-                    **opts,
-                )
+                with _capture_stderr_fd(on_line):
+                    results = preprocess(
+                        [job.upload_path],
+                        output_dir=self.store.output_dir(job.doc_id),
+                        device_mode=device,
+                        **opts,
+                    )
                 result = results[0]
                 if not result.get("markdown_path"):
                     raise RuntimeError("MinerU produced no markdown output")
@@ -238,11 +255,8 @@ class JobManager:
                 job.status = "failed"
                 job.error = f"{type(e).__name__}: {e}"
                 job.finished_at = time.time()
-                sys.stderr = orig_stderr
                 traceback.print_exc()
                 self._publish(job)
-            finally:
-                sys.stderr = orig_stderr
 
 
 def sse_format(event: dict) -> str:
