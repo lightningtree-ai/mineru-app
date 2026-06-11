@@ -1,0 +1,19 @@
+# virtual environment
+.venv/
+
+# app data (uploads, parse outputs, manifest) + ad-hoc CLI outputs
+data/
+output/
+markdown/
+
+# local-only files
+.env
+run_lmr.py
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# model cache (HuggingFace downloads to ~/.cache by default, but just in case)
+models/

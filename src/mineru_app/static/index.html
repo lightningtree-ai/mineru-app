@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MinerU App</title>
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/katex/katex.min.js"></script>
+  <script src="/static/vendor/katex/auto-render.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>MinerU <span class="accent">App</span></h1>
+    <span class="subtitle">drag &amp; drop documents &rarr; agent-ready Markdown</span>
+    <span id="device-badge" class="badge" hidden></span>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar">
+      <section id="dropzone" tabindex="0">
+        <div class="dz-inner">
+          <div class="dz-icon">&#8595;</div>
+          <p><strong>Drop files or folders here</strong></p>
+          <p class="dim">PDF &middot; docx / pptx / xlsx &middot; images</p>
+          <p>
+            <button id="pick-files" class="linklike" type="button">choose files</button> &middot;
+            <button id="pick-folder" class="linklike" type="button">choose a folder</button>
+          </p>
+          <input id="file-input" type="file" multiple hidden>
+          <input id="folder-input" type="file" webkitdirectory multiple hidden>
+        </div>
+      </section>
+
+      <section id="staged" hidden>
+        <div class="row space-between">
+          <strong id="staged-count"></strong>
+          <button id="staged-clear" class="linklike" type="button">clear</button>
+        </div>
+        <ul id="staged-list"></ul>
+        <button id="process-btn" class="primary" type="button">Process</button>
+      </section>
+
+      <details id="options">
+        <summary>Options</summary>
+        <div class="opt-grid">
+          <label>Language
+            <select id="opt-lang">
+              <option value="en" selected>en</option><option value="ch">ch</option>
+              <option value="japan">japan</option><option value="korean">korean</option>
+              <option value="fr">fr</option><option value="german">german</option>
+            </select>
+          </label>
+          <label>Backend
+            <select id="opt-backend">
+              <option value="pipeline" selected>pipeline</option>
+              <option value="vlm-transformers">vlm-transformers</option>
+            </select>
+          </label>
+          <label>Method
+            <select id="opt-method">
+              <option value="auto" selected>auto</option>
+              <option value="txt">txt</option><option value="ocr">ocr</option>
+            </select>
+          </label>
+          <label>Device
+            <select id="opt-device">
+              <option value="auto" selected>auto</option><option value="cuda">cuda</option>
+              <option value="mps">mps</option><option value="cpu">cpu</option>
+            </select>
+          </label>
+          <label class="check"><input id="opt-formula" type="checkbox" checked> Formulas</label>
+          <label class="check"><input id="opt-table" type="checkbox" checked> Tables</label>
+          <label>Pages from <input id="opt-start" type="number" min="0" placeholder="0"></label>
+          <label>to <input id="opt-end" type="number" min="0" placeholder="last"></label>
+        </div>
+      </details>
+
+      <section id="queue-section" hidden>
+        <h2>Queue</h2>
+        <ul id="queue-list"></ul>
+      </section>
+
+      <section id="library-section">
+        <div class="row space-between">
+          <h2>Library</h2>
+          <label class="check dim"><input id="lib-select-all" type="checkbox"> all</label>
+        </div>
+        <div id="export-bar" hidden>
+          <span id="export-count" class="dim"></span>
+          <button id="export-md" type="button" title="Flat zip of .md files only">&#11015; md</button>
+          <button id="export-md-img" type="button" title="Flat zip of .md files + images folders, links rewritten">&#11015; md + images</button>
+        </div>
+        <ul id="library-list"></ul>
+        <p id="library-empty" class="dim">Nothing processed yet.</p>
+      </section>
+    </aside>
+
+    <main id="viewer">
+      <div id="viewer-empty">
+        <p class="dim">Process a document or pick one from the library to preview it here.</p>
+      </div>
+      <div id="viewer-doc" hidden>
+        <div id="viewer-head">
+          <strong id="viewer-title"></strong>
+          <span id="viewer-meta" class="dim"></span>
+          <span class="spacer"></span>
+          <a id="viewer-zip" href="#" title="Download full MinerU output tree">full zip</a>
+          <button id="viewer-delete" class="danger linklike" type="button">delete</button>
+        </div>
+        <nav id="tabs">
+          <button data-tab="markdown" class="tab active" type="button">Markdown</button>
+          <button data-tab="side" class="tab" type="button">Side-by-side</button>
+          <button data-tab="blocks" class="tab" type="button">Blocks</button>
+          <button data-tab="raw" class="tab" type="button">Raw</button>
+        </nav>
+        <div id="tab-markdown" class="tab-pane active">
+          <article id="md-rendered" class="md"></article>
+        </div>
+        <div id="tab-side" class="tab-pane">
+          <div id="side-split">
+            <div id="side-pdf"></div>
+            <article id="side-md" class="md"></article>
+          </div>
+        </div>
+        <div id="tab-blocks" class="tab-pane">
+          <div class="row">
+            <label>Type
+              <select id="blocks-filter"><option value="">all</option></select>
+            </label>
+            <label class="check"><input id="blocks-json" type="checkbox"> raw JSON</label>
+          </div>
+          <div id="blocks-table"></div>
+          <pre id="blocks-raw" hidden></pre>
+        </div>
+        <div id="tab-raw" class="tab-pane">
+          <button id="raw-copy" type="button">Copy markdown</button>
+          <pre id="raw-md"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
