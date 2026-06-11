@@ -62,6 +62,11 @@ button.primary:disabled { opacity: .5; cursor: default; }
 
 /* options */
 #options summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--dim); }
+.tip { cursor: help; text-decoration: underline dotted var(--border) 1.5px; text-underline-offset: 3px; }
+.warn {
+  margin: 10px 0 0; padding: 8px 10px; font-size: 12px; border-radius: 8px;
+  background: #fef3c7; color: var(--run); border: 1px solid #fcd34d;
+}
 .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 10px; }
 .opt-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
 .opt-grid label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
@@ -79,6 +84,16 @@ button.primary:disabled { opacity: .5; cursor: default; }
 .chip.done { background: #dcfce7; color: var(--ok); }
 .chip.failed { background: #fee2e2; color: var(--err); }
 .job-error { font-size: 12px; color: var(--err); margin: 2px 0 4px 4px; white-space: pre-wrap; }
+.job-progress {
+  font-size: 11px; color: var(--dim); margin: 0 0 4px 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.job-cancel {
+  border: none; background: none; color: var(--dim); cursor: pointer;
+  font: inherit; font-size: 12px; padding: 0 2px;
+}
+.job-cancel:hover { color: var(--err); }
 
 /* library */
 #export-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -95,6 +110,12 @@ button.primary:disabled { opacity: .5; cursor: default; }
 #library-list li.selected-doc { background: var(--accent-soft); }
 #library-list .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #library-list .meta { color: var(--dim); font-size: 11px; white-space: nowrap; }
+.icon-btn {
+  border: none; background: none; cursor: pointer; font-size: 13px; padding: 0 2px;
+  opacity: 0; transition: opacity .12s;
+}
+#library-list li:hover .icon-btn { opacity: .8; }
+.icon-btn:hover { opacity: 1 !important; }
 
 /* viewer */
 #viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }

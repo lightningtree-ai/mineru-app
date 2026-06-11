@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import queue
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -59,6 +60,16 @@ async def create_jobs(files: list[UploadFile], options: str = Form("{}")):
 @app.get("/api/jobs")
 def list_jobs():
     return {"jobs": manager.list_jobs(), "device": manager.device}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    status = manager.cancel(job_id)
+    if status == "missing":
+        raise HTTPException(404, "Job not found")
+    if status != "cancelled":
+        raise HTTPException(409, f"Job is {status}; only queued jobs can be cancelled")
+    return {"ok": True}
 
 
 @app.get("/api/events")
@@ -139,6 +150,27 @@ def doc_zip(doc_id: str):
         raise HTTPException(404, "No output for this document")
     return StreamingResponse(buf, media_type="application/zip", headers={
         "Content-Disposition": f'attachment; filename="{doc["stem"]}.zip"'})
+
+
+@app.post("/api/docs/{doc_id}/reveal")
+def reveal_doc(doc_id: str):
+    """Open the OS file manager at the document's output (server is local-only)."""
+    doc = _get_doc(doc_id)
+    try:
+        path = _doc_file(doc, "markdown_path")
+        select = True
+    except HTTPException:
+        path = _doc_file(doc, "parse_dir")
+        select = False
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", str(path)] if select else ["open", str(path)]
+    elif sys.platform == "win32":
+        cmd = ["explorer", f"/select,{path}"] if select else ["explorer", str(path)]
+    else:
+        cmd = ["xdg-open", str(path.parent if select else path)]
+    # explorer.exe exits nonzero even on success, so don't check the return code
+    subprocess.Popen(cmd)
+    return {"ok": True}
 
 
 @app.delete("/api/docs/{doc_id}")

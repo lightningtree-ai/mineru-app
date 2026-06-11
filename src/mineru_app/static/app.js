@@ -3,6 +3,7 @@
 const $ = (sel) => document.querySelector(sel);
 
 let SUPPORTED = [".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".jp2"];
+let PLATFORM = "";               // darwin | win32 | linux, from /api/meta
 let staged = [];                 // File objects waiting to be processed
 const jobs = new Map();          // job id -> job
 let docs = [];                   // library entries (newest first)
@@ -16,7 +17,9 @@ async function boot() {
   try {
     const meta = await (await fetch("/api/meta")).json();
     SUPPORTED = meta.supported_suffixes.map((s) => s.toLowerCase());
+    PLATFORM = meta.platform;
     setDevice(meta.device);
+    $("#viewer-reveal").textContent = revealLabel();
   } catch { /* defaults are fine */ }
   await refreshJobs();
   await refreshLibrary();
@@ -31,6 +34,16 @@ function setDevice(device) {
     badge.textContent = `device: ${device}`;
     badge.hidden = false;
   }
+}
+
+function revealLabel() {
+  if (PLATFORM === "darwin") return "Reveal in Finder";
+  if (PLATFORM === "win32") return "Show in Explorer";
+  return "Show in file manager";
+}
+
+async function revealDoc(docId) {
+  await fetch(`/api/docs/${docId}/reveal`, { method: "POST" });
 }
 
 /* ---------------- drag & drop / staging ---------------- */
@@ -137,6 +150,7 @@ function restoreOptions() {
     if (!(id in saved)) continue;
     if (el.type === "checkbox") el.checked = saved[id]; else el.value = saved[id];
   }
+  $("#backend-warning").hidden = $("#opt-backend").value !== "vlm-transformers";
 }
 
 function persistOptions() {
@@ -181,6 +195,7 @@ function connectEvents() {
     const event = JSON.parse(e.data);
     if (event.type === "hello") setDevice(event.device);
     if (event.type === "job") {
+      event.job._receivedAt = Date.now();
       jobs.set(event.job.id, event.job);
       if (event.job.device) setDevice(event.job.device);
       renderQueue();
@@ -195,7 +210,10 @@ function connectEvents() {
 async function refreshJobs() {
   const data = await (await fetch("/api/jobs")).json();
   jobs.clear();
-  for (const j of data.jobs) jobs.set(j.id, j);
+  for (const j of data.jobs) {
+    j._receivedAt = Date.now();
+    jobs.set(j.id, j);
+  }
   setDevice(data.device);
   renderQueue();
 }
@@ -226,7 +244,24 @@ function renderQueue() {
     chip.className = `chip ${job.status}`;
     chip.textContent = job.status;
     li.append(name, time, chip);
+    if (job.status === "queued") {
+      const x = document.createElement("button");
+      x.className = "job-cancel";
+      x.type = "button";
+      x.title = "Cancel this queued job";
+      x.textContent = "✕";
+      x.addEventListener("click", () => fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" }));
+      li.appendChild(x);
+    }
     ul.appendChild(li);
+    if (job.status === "running") {
+      const prog = document.createElement("div");
+      prog.className = "job-progress";
+      prog.dataset.jobProgress = job.id;
+      prog.textContent = progressText(job);
+      prog.title = job.progress || "";
+      ul.appendChild(prog);
+    }
     if (job.status === "failed" && job.error) {
       const err = document.createElement("div");
       err.className = "job-error";
@@ -241,11 +276,20 @@ function renderQueue() {
   }
 }
 
+function progressText(job) {
+  let text = job.progress || "working… (first run loads models, which takes a while)";
+  const quiet = job._receivedAt ? Date.now() - job._receivedAt : 0;
+  if (quiet > 90_000) text += `  · no output for ${Math.round(quiet / 60_000)}m`;
+  return text;
+}
+
 function tickElapsed() {
   for (const job of jobs.values()) {
     if (job.status !== "running") continue;
     const el = document.querySelector(`[data-job-time="${job.id}"]`);
     if (el) el.textContent = elapsed(job);
+    const prog = document.querySelector(`[data-job-progress="${job.id}"]`);
+    if (prog) prog.textContent = progressText(job);
   }
 }
 
@@ -278,7 +322,13 @@ function renderLibrary() {
     const meta = document.createElement("span");
     meta.className = "meta";
     meta.textContent = `${doc.blocks} blocks · ${doc.seconds}s`;
-    li.append(cb, name, meta);
+    const reveal = document.createElement("button");
+    reveal.className = "icon-btn";
+    reveal.type = "button";
+    reveal.title = revealLabel();
+    reveal.textContent = "📂";
+    reveal.addEventListener("click", (e) => { e.stopPropagation(); revealDoc(doc.id); });
+    li.append(cb, name, meta, reveal);
     li.addEventListener("click", () => openDoc(doc.id));
     ul.appendChild(li);
   }
@@ -468,6 +518,12 @@ $("#raw-copy").addEventListener("click", async () => {
   await navigator.clipboard.writeText(tabState.markdown || "");
   $("#raw-copy").textContent = "Copied!";
   setTimeout(() => ($("#raw-copy").textContent = "Copy markdown"), 1500);
+});
+
+$("#viewer-reveal").addEventListener("click", () => { if (currentDoc) revealDoc(currentDoc.id); });
+
+$("#opt-backend").addEventListener("change", (e) => {
+  $("#backend-warning").hidden = e.target.value !== "vlm-transformers";
 });
 
 $("#viewer-delete").addEventListener("click", async () => {

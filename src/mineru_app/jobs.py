@@ -7,8 +7,11 @@ lifetime, and sequential execution avoids competing for the GPU.
 """
 from __future__ import annotations
 
+import io
 import json
 import queue
+import re
+import sys
 import threading
 import time
 import traceback
@@ -57,9 +60,10 @@ class Job:
     name: str
     upload_path: str
     options: dict
-    status: str = "queued"  # queued | running | done | failed
+    status: str = "queued"  # queued | running | done | failed | cancelled
     error: str | None = None
     device: str | None = None
+    progress: str | None = None  # last log/progress line from MinerU
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -73,10 +77,44 @@ class Job:
             "status": self.status,
             "error": self.error,
             "device": self.device,
+            "progress": self.progress,
             "queued_at": self.queued_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+class _StderrTee(io.TextIOBase):
+    """Mirror stderr while feeding complete lines (or \\r progress-bar refreshes,
+    e.g. tqdm during VLM inference) to a callback, so long MinerU jobs show signs
+    of life in the UI instead of sitting silently on "running" for hours."""
+
+    def __init__(self, original, on_line):
+        self.original = original
+        self.on_line = on_line
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        try:
+            self.original.write(s)
+        except Exception:
+            pass
+        self._buf += s
+        *lines, self._buf = re.split(r"[\r\n]", self._buf)
+        for line in lines:
+            line = _ANSI.sub("", line).strip()
+            if line:
+                self.on_line(line)
+        return len(s)
+
+    def flush(self) -> None:
+        try:
+            self.original.flush()
+        except Exception:
+            pass
 
 
 class EventBus:
@@ -133,6 +171,20 @@ class JobManager:
             jobs = list(self._jobs.values())
         return [j.public() for j in sorted(jobs, key=lambda j: j.queued_at, reverse=True)]
 
+    def cancel(self, job_id: str) -> str:
+        """Cancel a queued job. Running jobs can't be interrupted (the model is
+        mid-inference in this process); returns the job's current status."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return "missing"
+            if job.status != "queued":
+                return job.status
+            job.status = "cancelled"
+            job.finished_at = time.time()
+        self._publish(job)
+        return "cancelled"
+
     def _publish(self, job: Job) -> None:
         self.bus.publish({"type": "job", "job": job.public()})
 
@@ -141,9 +193,24 @@ class JobManager:
 
         while True:
             job = self._queue.get()
+            if job.status != "queued":  # cancelled while waiting
+                continue
             job.status = "running"
             job.started_at = time.time()
             self._publish(job)
+
+            last_pub = 0.0
+
+            def on_line(line: str, job=job) -> None:
+                nonlocal last_pub
+                job.progress = line[:300]
+                now = time.time()
+                if now - last_pub >= 1.0:  # throttle SSE to ~1/s during bursts
+                    last_pub = now
+                    self._publish(job)
+
+            orig_stderr = sys.stderr
+            sys.stderr = _StderrTee(orig_stderr, on_line)
             try:
                 opts = dict(job.options)
                 device = opts.pop("device", None)
@@ -163,6 +230,7 @@ class JobManager:
                 )
                 self.store.add_doc(entry)
                 job.status = "done"
+                job.progress = None
                 job.finished_at = time.time()
                 self._publish(job)
                 self.bus.publish({"type": "doc", "doc": entry})
@@ -170,8 +238,11 @@ class JobManager:
                 job.status = "failed"
                 job.error = f"{type(e).__name__}: {e}"
                 job.finished_at = time.time()
+                sys.stderr = orig_stderr
                 traceback.print_exc()
                 self._publish(job)
+            finally:
+                sys.stderr = orig_stderr
 
 
 def sse_format(event: dict) -> str:

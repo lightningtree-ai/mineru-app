@@ -43,38 +43,42 @@
       </section>
 
       <details id="options">
-        <summary>Options</summary>
+        <summary>Options <span class="dim">(hover labels for help)</span></summary>
         <div class="opt-grid">
-          <label>Language
+          <label><span class="tip" title="Main language of the documents. Guides OCR model choice — wrong language hurts accuracy on scanned pages. 'en' is right for English papers.">Language</span>
             <select id="opt-lang">
               <option value="en" selected>en</option><option value="ch">ch</option>
               <option value="japan">japan</option><option value="korean">korean</option>
               <option value="fr">fr</option><option value="german">german</option>
             </select>
           </label>
-          <label>Backend
+          <label><span class="tip" title="pipeline: classic layout + formula + table + OCR models — fast and accurate, recommended. vlm-transformers: a single vision-language model reads each page — can handle unusual layouts, but is MUCH slower without a powerful NVIDIA GPU (often hours per paper on a Mac).">Backend</span>
             <select id="opt-backend">
               <option value="pipeline" selected>pipeline</option>
               <option value="vlm-transformers">vlm-transformers</option>
             </select>
           </label>
-          <label>Method
+          <label><span class="tip" title="How text is extracted (pipeline backend only). auto: per-page detection — embedded text is read directly, scanned pages get OCR. txt: force direct extraction (born-digital PDFs). ocr: force OCR (scans, or PDFs with broken embedded text).">Method</span>
             <select id="opt-method">
               <option value="auto" selected>auto</option>
               <option value="txt">txt</option><option value="ocr">ocr</option>
             </select>
           </label>
-          <label>Device
+          <label><span class="tip" title="Compute device. auto picks cuda → mps (Apple GPU) → cpu. Choose cpu if you hit GPU out-of-memory errors.">Device</span>
             <select id="opt-device">
               <option value="auto" selected>auto</option><option value="cuda">cuda</option>
               <option value="mps">mps</option><option value="cpu">cpu</option>
             </select>
           </label>
-          <label class="check"><input id="opt-formula" type="checkbox" checked> Formulas</label>
-          <label class="check"><input id="opt-table" type="checkbox" checked> Tables</label>
-          <label>Pages from <input id="opt-start" type="number" min="0" placeholder="0"></label>
-          <label>to <input id="opt-end" type="number" min="0" placeholder="last"></label>
+          <label class="check"><input id="opt-formula" type="checkbox" checked> <span class="tip" title="Recognize equations and output LaTeX math ($…$). Turn off for a speed-up on documents without formulas.">Formulas</span></label>
+          <label class="check"><input id="opt-table" type="checkbox" checked> <span class="tip" title="Parse tables into structured HTML instead of flat text/images. Turn off for a speed-up if you don't need tables.">Tables</span></label>
+          <label><span class="tip" title="First page to process, 0-indexed. Leave empty to start from the beginning.">Pages from</span> <input id="opt-start" type="number" min="0" placeholder="0"></label>
+          <label><span class="tip" title="Last page to process, 0-indexed and inclusive. Leave empty to go to the end. Use a small range to preview a long document quickly.">to</span> <input id="opt-end" type="number" min="0" placeholder="last"></label>
         </div>
+        <p id="backend-warning" class="warn" hidden>&#9888; vlm-transformers runs a vision-language
+          model over every page — expect <strong>hours per paper</strong> without a powerful NVIDIA
+          GPU. Watch the live log line under the running job to confirm it's making progress;
+          <em>pipeline</em> is the fast choice.</p>
       </details>
 
       <section id="queue-section" hidden>
@@ -106,6 +110,7 @@
           <strong id="viewer-title"></strong>
           <span id="viewer-meta" class="dim"></span>
           <span class="spacer"></span>
+          <button id="viewer-reveal" class="linklike" type="button" title="Open the output folder in your file manager">reveal</button>
           <a id="viewer-zip" href="#" title="Download full MinerU output tree">full zip</a>
           <button id="viewer-delete" class="danger linklike" type="button">delete</button>
         </div>
