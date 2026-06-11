@@ -141,8 +141,10 @@ def preprocess(
 
     do_parse(
         output_dir=str(output_dir),
-        pdf_file_names=stems,
-        pdf_bytes_list=pdf_bytes_list,
+        # do_parse mutates these lists in place when it splits out office docs,
+        # so hand it copies and keep ours intact for the results loop below.
+        pdf_file_names=list(stems),
+        pdf_bytes_list=list(pdf_bytes_list),
         p_lang_list=lang_list,
         backend=backend,
         parse_method=method,
