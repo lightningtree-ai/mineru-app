@@ -26,6 +26,12 @@ async function boot() {
   connectEvents();
   restoreOptions();
   setInterval(tickElapsed, 1000);
+  // Coming back to the tab (e.g. after the machine slept mid-job) is exactly
+  // when a stale "still running" line would be visible — reconcile on wake, in
+  // case the SSE socket was half-open and never fired onerror.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") reconcile();
+  });
 }
 
 function setDevice(device) {
@@ -191,6 +197,17 @@ $("#process-btn").addEventListener("click", async () => {
 
 function connectEvents() {
   const es = new EventSource("/api/events");
+  let reconnecting = false;  // true after a drop, until the stream comes back
+  es.onopen = () => {
+    // The event bus has no replay, so job "done"/"doc" events that fired while
+    // we were disconnected are gone. Re-sync from the REST endpoints so a job
+    // that finished during the outage doesn't stay frozen on its last progress
+    // line. Skip the initial connect — boot() already fetched both.
+    if (reconnecting) {
+      reconnecting = false;
+      reconcile();
+    }
+  };
   es.onmessage = (e) => {
     const event = JSON.parse(e.data);
     if (event.type === "hello") setDevice(event.device);
@@ -204,7 +221,14 @@ function connectEvents() {
       refreshLibrary().then(() => { if (!currentDoc) openDoc(event.doc.id); });
     }
   };
-  es.onerror = () => { /* EventSource auto-reconnects */ };
+  es.onerror = () => { reconnecting = true; /* EventSource auto-reconnects */ };
+}
+
+// Re-sync queue + library from the server's authoritative state. Cheap and
+// idempotent; safe to call on any reconnect or tab wake.
+function reconcile() {
+  refreshJobs();
+  refreshLibrary();
 }
 
 async function refreshJobs() {
