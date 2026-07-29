@@ -15,14 +15,14 @@ Install [uv](https://docs.astral.sh/uv/) once, then:
 
 **macOS / Linux**
 ```bash
-git clone https://github.com/LTAdvancedMaterials/mineru-app && cd mineru-app
+git clone https://github.com/lightningtree-ai/mineru-app && cd mineru-app
 uv sync
 uv run mineru-app
 ```
 
 **Windows (PowerShell)**
 ```powershell
-git clone https://github.com/LTAdvancedMaterials/mineru-app; cd mineru-app
+git clone https://github.com/lightningtree-ai/mineru-app; cd mineru-app
 uv sync
 uv run mineru-app
 ```
@@ -34,7 +34,13 @@ opens your browser.
 
 > **First document is slow**: MinerU downloads its layout/formula/table/OCR models from
 > HuggingFace into `~/.cache` on first use (a few GB). After that, everything is offline
-> and fast — the models stay loaded while the app runs.
+> and fast — the models stay loaded between documents.
+>
+> The worker process holding them is recycled every 10 documents (and whenever you change
+> an option that needs different models, e.g. language or backend), which costs one model
+> reload. That's deliberate: the inference stack leaks memory steadily across documents,
+> and recycling is what keeps a long batch from growing without bound. Raise or lower it
+> with `MINERU_APP_WORKER_MAX_JOBS`.
 
 ## Using it
 

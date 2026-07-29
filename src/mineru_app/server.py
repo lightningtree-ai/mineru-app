@@ -1,9 +1,11 @@
 """FastAPI app: upload + queue API, document library, artifact serving, export."""
 from __future__ import annotations
 
+import contextlib
 import json
 import mimetypes
 import queue
+import signal
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -25,9 +27,24 @@ store = Store()
 manager = JobManager(store)
 
 
+def _handle_hangup_like_sigterm() -> None:
+    """Closing the terminal sends SIGHUP, which uvicorn doesn't install a handler
+    for, so the process dies without running lifespan shutdown and the worker
+    never gets terminated. Route it through the same graceful path as SIGTERM.
+    (The worker's own watchdog catches this too; this just makes it a clean stop
+    rather than a kill mid-job.)"""
+    if not hasattr(signal, "SIGHUP"):
+        return  # Windows
+    term = signal.getsignal(signal.SIGTERM)  # uvicorn's, installed before lifespan
+    if callable(term):
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(signal.SIGHUP, term)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     manager.start()
+    _handle_hangup_like_sigterm()
     yield
     manager.shutdown()
 
