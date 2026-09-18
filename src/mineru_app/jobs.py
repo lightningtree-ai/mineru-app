@@ -38,11 +38,8 @@ from pathlib import Path
 from .store import Store
 
 ALLOWED_OPTIONS = {
-    "lang": str,
-    "backend": ("pipeline", "vlm-transformers"),
-    "method": ("auto", "txt", "ocr"),
-    "formula": bool,
-    "table": bool,
+    "tier": ("flash", "basic", "standard", "advanced"),
+    "ocr_mode": ("auto", "txt", "ocr"),
     "start_page": int,
     "end_page": int,
     "device": ("auto", "cuda", "mps", "cpu"),
@@ -53,11 +50,11 @@ ALLOWED_OPTIONS = {
 # a leaky inference stack can accumulate.
 WORKER_MAX_JOBS = max(1, int(os.environ.get("MINERU_APP_WORKER_MAX_JOBS", "10")))
 
-# Options that make MinerU load an additional model set. Its ModelSingletons key
-# on (lang, formula, table) and on backend, and never evict — so a worker that
-# sees several combinations ends up holding all of them at once. Retiring the
-# worker when the signature changes keeps exactly one set resident.
-_MODEL_OPTION_KEYS = ("backend", "lang", "formula", "table", "device")
+# Options that make MinerU load a different model set. Tier decides which models
+# load at all, and MinerU caches them without evicting — so a worker that sees
+# several combinations ends up holding all of them at once. Retiring the worker
+# when the signature changes keeps exactly one set resident.
+_MODEL_OPTION_KEYS = ("tier", "device")
 
 
 def _model_signature(options: dict) -> tuple:

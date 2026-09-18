@@ -35,12 +35,26 @@ os.environ.setdefault("MINERU_MODEL_SOURCE", "huggingface")
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 PDF_SUFFIXES = {".pdf"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif", ".bmp", ".tiff"}
 OFFICE_SUFFIXES = {".docx", ".pptx", ".xlsx"}
 SUPPORTED_SUFFIXES = PDF_SUFFIXES | IMAGE_SUFFIXES | OFFICE_SUFFIXES
+
+# Parsing quality tiers, cheapest first. `flash` reads the PDF text layer with no
+# inference models at all; `basic` adds the small OCR/formula/table models; the last
+# two add a vision-language model on top.
+TIERS = ("flash", "basic", "standard", "advanced")
+OCR_MODES = ("auto", "txt", "ocr")
+
+# Filenames in the parse directory. save() writes the first two; we add the third.
+MARKDOWN_NAME = "markdown.md"
+STRUCTURED_NAME = "structured_content.json"
+CONTENT_LIST_NAME = "content_list.json"
+
+_MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
 def _log(*args, **kwargs):
@@ -64,40 +78,87 @@ def _collect_inputs(paths: list[str]) -> list[Path]:
     return out
 
 
-def _parse_subdir(source: Path, backend: str, method: str) -> str:
-    """Subdirectory MinerU writes into for one document: <out>/<stem>/<subdir>/."""
-    if source.suffix.lower() in OFFICE_SUFFIXES:
-        return "office"
-    return method if backend == "pipeline" else "vlm"
+def _page_range(start_page: int, end_page: int | None) -> str:
+    """Our 0-indexed inclusive bounds -> MinerU's 1-based range string.
+
+    MinerU spells the last page `r1`, which is how an open-ended range is written.
+    An empty string means the whole document.
+    """
+    start = max(0, int(start_page or 0))
+    if end_page is None:
+        return "" if start == 0 else f"{start + 1}-r1"
+    return f"{start + 1}-{int(end_page) + 1}"
 
 
-def _locate_outputs(output_dir: Path, stem: str, parse_dir: Path) -> dict:
-    """Find the artifacts MinerU wrote for one document."""
-    def _find(suffix: str) -> Path | None:
-        # Prefer the canonical name, else any match under the parse dir.
-        exact = parse_dir / f"{stem}{suffix}"
-        if exact.exists():
-            return exact
-        hits = list(parse_dir.glob(f"*{suffix}"))
-        return hits[0] if hits else None
+# MinerU 4 splits 3.x's single `text` type by role. Fold the two title types back into
+# text + text_level so the Blocks tab keeps rendering them the way it always has.
+_TITLE_LEVELS = {"doc_title": 1, "paragraph_title": 2}
 
-    md_path = _find(".md")
-    content_list_path = _find("_content_list.json")
-    middle_path = _find("_middle.json")
+
+def _flatten_blocks(structured: dict) -> list[dict]:
+    """MinerU 4's page tree -> the flat block list this app publishes.
+
+    `structured` is {"pages": [{"page_idx": n, "blocks": [...]}, ...]}. The web UI and
+    any agentic caller want one ordered list carrying the field names the app has always
+    used, so the adapter lives here and nothing downstream changes.
+    """
+    out: list[dict] = []
+    for page in structured.get("pages", []):
+        page_idx = page.get("page_idx")
+        for block in page.get("blocks", []):
+            btype = block.get("type")
+            content = block.get("content", "")
+            item = {"type": btype, "page_idx": page_idx}
+            if "bbox" in block:
+                item["bbox"] = block["bbox"]
+
+            if btype in _TITLE_LEVELS:
+                item["type"] = "text"
+                item["text_level"] = block.get("level", _TITLE_LEVELS[btype])
+            elif "level" in block:
+                item["text_level"] = block["level"]
+            item["text"] = content
+
+            # Visual blocks carry a relative path once save() has externalised assets.
+            source = block.get("image_source")
+            if source and not source.startswith("data:"):
+                item["img_path"] = source
+            elif content:
+                hit = _MD_IMAGE.search(content)
+                if hit and not hit.group(1).startswith("data:"):
+                    item["img_path"] = hit.group(1)
+
+            captions = block.get("captions") or []
+            footnotes = block.get("footnotes") or []
+            if btype == "table":
+                item["table_caption"], item["table_footnote"] = captions, footnotes
+                item["table_body"] = content
+            elif btype in ("image", "chart"):
+                item[f"{btype}_caption"], item[f"{btype}_footnote"] = captions, footnotes
+            elif captions or footnotes:
+                item["captions"], item["footnotes"] = captions, footnotes
+
+            out.append(item)
+    return out
+
+
+def _locate_outputs(parse_dir: Path) -> dict:
+    """Read back what we wrote for one document."""
+    md_path = parse_dir / MARKDOWN_NAME
+    content_list_path = parse_dir / CONTENT_LIST_NAME
     images_dir = parse_dir / "images"
 
-    markdown = md_path.read_text(encoding="utf-8") if md_path and md_path.exists() else ""
+    markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
     content_list = []
-    if content_list_path and content_list_path.exists():
+    if content_list_path.exists():
         content_list = json.loads(content_list_path.read_text(encoding="utf-8"))
 
     return {
         "parse_dir": str(parse_dir),
-        "markdown_path": str(md_path) if md_path else None,
+        "markdown_path": str(md_path) if md_path.exists() else None,
         "markdown": markdown,
-        "content_list_path": str(content_list_path) if content_list_path else None,
+        "content_list_path": str(content_list_path) if content_list_path.exists() else None,
         "content_list": content_list,
-        "middle_json_path": str(middle_path) if middle_path else None,
         "images_dir": str(images_dir) if images_dir.exists() else None,
     }
 
@@ -106,11 +167,8 @@ def preprocess(
     inputs: list[str | Path],
     output_dir: str | Path = "output",
     *,
-    lang: str = "en",
-    backend: str = "pipeline",
-    method: str = "auto",
-    formula: bool = True,
-    table: bool = True,
+    tier: str = "basic",
+    ocr_mode: str = "auto",
     image_analysis: bool = False,
     start_page: int = 0,
     end_page: int | None = None,
@@ -121,45 +179,52 @@ def preprocess(
     Returns a list of result dicts (one per input), each containing the output paths,
     the extracted Markdown text, and the structured `content_list` blocks.
     """
+    if tier not in TIERS:
+        raise ValueError(f"Unknown tier {tier!r}. Choose one of: {', '.join(TIERS)}")
+    if ocr_mode not in OCR_MODES:
+        raise ValueError(f"Unknown ocr_mode {ocr_mode!r}. Choose one of: {', '.join(OCR_MODES)}")
     if device_mode:
         os.environ["MINERU_DEVICE_MODE"] = device_mode
 
     # Imported lazily: pulls in torch/transformers and is slow; keep --help fast.
-    from mineru.cli.common import do_parse, read_fn
-    from mineru.utils.config_reader import get_device
+    from mineru.parser import parse
+    from mineru.parser.writer import FileBasedDataWriter
+    from mineru.model.runtime.device import get_device
 
     files = _collect_inputs([str(i) for i in inputs])
     device = get_device()
-    _log(f"[mineru-app] device={device} backend={backend} method={method} files={len(files)}")
+    page_range = _page_range(start_page, end_page)
+    _log(f"[mineru-app] device={device} tier={tier} ocr_mode={ocr_mode} files={len(files)}")
 
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stems = [f.stem for f in files]
-    pdf_bytes_list = [read_fn(f) for f in files]
-    lang_list = [lang] * len(files)
-
-    do_parse(
-        output_dir=str(output_dir),
-        # do_parse mutates these lists in place when it splits out office docs,
-        # so hand it copies and keep ours intact for the results loop below.
-        pdf_file_names=list(stems),
-        pdf_bytes_list=list(pdf_bytes_list),
-        p_lang_list=lang_list,
-        backend=backend,
-        parse_method=method,
-        formula_enable=formula,
-        table_enable=table,
-        image_analysis=image_analysis,
-        start_page_id=start_page,
-        end_page_id=end_page,
-    )
-
     results = []
-    for f, stem in zip(files, stems):
-        parse_dir = output_dir / stem / _parse_subdir(f, backend, method)
-        result = {"source": str(f.resolve()), "device": device, **_locate_outputs(output_dir, stem, parse_dir)}
-        results.append(result)
+    for f in files:
+        parse_dir = output_dir / f.stem / tier
+        parse_dir.mkdir(parents=True, exist_ok=True)
+
+        result = parse(
+            str(f),
+            tier=tier,
+            ocr_mode=ocr_mode,
+            image_analysis=image_analysis,
+            page_range=page_range,
+        )
+        # save() externalises the images, so the Markdown references images/<name>
+        # rather than inlining megabytes of base64. It writes markdown.md,
+        # middle_json.json, structured_content.json and the image bytes.
+        result.save(FileBasedDataWriter(str(parse_dir)))
+        # Flatten the file save() just wrote, not result.structured_content(). save()
+        # materialises a copy, so the live object still carries base64 data: URIs where
+        # the written file has images/<name> paths.
+        structured = json.loads((parse_dir / STRUCTURED_NAME).read_text(encoding="utf-8"))
+        (parse_dir / CONTENT_LIST_NAME).write_text(
+            json.dumps(_flatten_blocks(structured), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        results.append({"source": str(f.resolve()), "device": device, **_locate_outputs(parse_dir)})
     return results
 
 
@@ -175,14 +240,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("inputs", nargs="+", help="Document file(s) or directory(ies) to process.")
     p.add_argument("-o", "--output", default="output", help="Output directory.")
-    p.add_argument("-l", "--lang", default="en", help="Document language (e.g. en, ch, japan).")
-    p.add_argument("-b", "--backend", default="pipeline",
-                   choices=["pipeline", "vlm-transformers"],
-                   help="Parsing backend. 'pipeline' is the GPU-accelerated default.")
-    p.add_argument("-m", "--method", default="auto", choices=["auto", "txt", "ocr"],
-                   help="Pipeline parse method.")
-    p.add_argument("--no-formula", action="store_true", help="Disable formula recognition.")
-    p.add_argument("--no-table", action="store_true", help="Disable table recognition.")
+    p.add_argument("-t", "--tier", default="basic", choices=list(TIERS),
+                   help="Parsing quality. 'flash' skips all models; 'standard' and "
+                        "'advanced' add a vision-language model and are much slower.")
+    p.add_argument("-m", "--ocr-mode", default="auto", choices=list(OCR_MODES),
+                   help="How text is read: auto-detect, force the text layer, or force OCR.")
     p.add_argument("--image-analysis", action="store_true",
                    help="Enable figure captioning/analysis (extra models, slower).")
     p.add_argument("-s", "--start-page", type=int, default=0, help="First page (0-indexed).")
@@ -199,11 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     results = preprocess(
         args.inputs,
         output_dir=args.output,
-        lang=args.lang,
-        backend=args.backend,
-        method=args.method,
-        formula=not args.no_formula,
-        table=not args.no_table,
+        tier=args.tier,
+        ocr_mode=args.ocr_mode,
         image_analysis=args.image_analysis,
         start_page=args.start_page,
         end_page=args.end_page,

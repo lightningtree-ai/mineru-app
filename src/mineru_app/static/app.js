@@ -131,17 +131,15 @@ $("#staged-clear").addEventListener("click", () => { staged = []; renderStaged()
 
 /* ---------------- options ---------------- */
 
-const OPT_IDS = ["opt-lang", "opt-backend", "opt-method", "opt-device", "opt-formula", "opt-table", "opt-start", "opt-end"];
+const VLM_TIERS = ["standard", "advanced"];
+const OPT_IDS = ["opt-tier", "opt-ocr-mode", "opt-device", "opt-start", "opt-end"];
 
 function gatherOptions() {
   const num = (v) => (v === "" ? null : Number(v));
   return {
-    lang: $("#opt-lang").value,
-    backend: $("#opt-backend").value,
-    method: $("#opt-method").value,
+    tier: $("#opt-tier").value,
+    ocr_mode: $("#opt-ocr-mode").value,
     device: $("#opt-device").value,
-    formula: $("#opt-formula").checked,
-    table: $("#opt-table").checked,
     start_page: num($("#opt-start").value),
     end_page: num($("#opt-end").value),
   };
@@ -156,7 +154,7 @@ function restoreOptions() {
     if (!(id in saved)) continue;
     if (el.type === "checkbox") el.checked = saved[id]; else el.value = saved[id];
   }
-  $("#backend-warning").hidden = $("#opt-backend").value !== "vlm-transformers";
+  $("#tier-warning").hidden = !VLM_TIERS.includes($("#opt-tier").value);
 }
 
 function persistOptions() {
@@ -550,8 +548,8 @@ $("#raw-copy").addEventListener("click", async () => {
 
 $("#viewer-reveal").addEventListener("click", () => { if (currentDoc) revealDoc(currentDoc.id); });
 
-$("#opt-backend").addEventListener("change", (e) => {
-  $("#backend-warning").hidden = e.target.value !== "vlm-transformers";
+$("#opt-tier").addEventListener("change", (e) => {
+  $("#tier-warning").hidden = !VLM_TIERS.includes(e.target.value);
 });
 
 $("#viewer-delete").addEventListener("click", async () => {

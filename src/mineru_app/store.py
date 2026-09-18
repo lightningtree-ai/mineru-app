@@ -3,7 +3,7 @@
 Layout (root overridable via MINERU_APP_DATA, default ./data):
     data/
       uploads/<doc_id>/<safe stem>.<ext>     original upload
-      output/<doc_id>/<safe stem>/<subdir>/  MinerU output tree
+      output/<doc_id>/<safe stem>/<tier>/    MinerU output tree
       manifest.json                          library index, survives restarts
 
 Manifest paths are stored relative to the data root so the folder is relocatable.
