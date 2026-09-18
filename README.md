@@ -69,6 +69,9 @@ folder, an Obsidian vault, etc.
 Processed documents persist in `./data/` (uploads, outputs, `manifest.json`) and the
 library survives restarts. Override the location with `--data DIR` or `MINERU_APP_DATA`.
 
+Uploads are matched by SHA-256. The same paper arriving under a publisher filename and a
+Zotero one is parsed once, and the drop zone names the document already in the library.
+
 ```
 mineru-app --help
   --host 127.0.0.1   bind address (localhost only by default)

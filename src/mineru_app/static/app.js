@@ -129,6 +129,20 @@ function renderStaged(skipped = 0) {
 
 $("#staged-clear").addEventListener("click", () => { staged = []; renderStaged(); });
 
+// The server matches uploads by content, so the same paper arriving under a second
+// filename is recognised rather than parsed again. Say so, or the file just vanishes.
+function showDuplicates(duplicates) {
+  const el = $("#upload-notice");
+  el.hidden = duplicates.length === 0;
+  if (!duplicates.length) return;
+  const names = duplicates.map((d) => d.existing_name);
+  const shown = names.slice(0, 3).join(", ");
+  const rest = names.length > 3 ? `, and ${names.length - 3} more` : "";
+  el.textContent =
+    `${names.length} file${names.length === 1 ? " was" : "s were"} already in the library: ` +
+    shown + rest;
+}
+
 /* ---------------- options ---------------- */
 
 const VLM_TIERS = ["standard", "advanced"];
@@ -173,15 +187,18 @@ $("#process-btn").addEventListener("click", async () => {
   const btn = $("#process-btn");
   btn.disabled = true;
   btn.textContent = "Uploading…";
+  $("#upload-notice").hidden = true;
   persistOptions();
   try {
     const form = new FormData();
     for (const f of staged) form.append("files", f, f.name);
     form.append("options", JSON.stringify(gatherOptions()));
     const resp = await fetch("/api/jobs", { method: "POST", body: form });
-    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || resp.statusText);
     staged = [];
     renderStaged();
+    showDuplicates(data.duplicates || []);
     await refreshJobs();
   } catch (e) {
     alert(`Upload failed: ${e.message}`);
