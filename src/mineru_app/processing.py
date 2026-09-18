@@ -224,6 +224,15 @@ def preprocess(
             encoding="utf-8",
         )
 
+        # save() also left MinerU's intermediate protocol and the raw model dump behind.
+        # Neither is read again by this app or the web UI, and together they run to
+        # megabytes per document. Dropped once the outputs above exist, so a crash
+        # mid-parse never costs a file we still needed. Keep them with
+        # MINERU_APP_KEEP_INTERMEDIATE=1 to reproduce an upstream bug.
+        if not os.environ.get("MINERU_APP_KEEP_INTERMEDIATE"):
+            for name in ("middle_json.json", "model_output.json"):
+                (parse_dir / name).unlink(missing_ok=True)
+
         results.append({"source": str(f.resolve()), "device": device, **_locate_outputs(parse_dir)})
     return results
 
