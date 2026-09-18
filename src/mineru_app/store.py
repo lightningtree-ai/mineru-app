@@ -7,9 +7,12 @@ Layout (root overridable via MINERU_APP_DATA, default ./data):
       manifest.json                          library index, survives restarts
 
 Manifest paths are stored relative to the data root so the folder is relocatable.
+Each entry also carries the SHA-256 of its upload, which is how re-uploading a document
+under a second filename is recognised instead of parsed again.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -33,6 +36,18 @@ def sanitize_stem(name: str) -> str:
     while len(stem.encode("utf-8")) > _MAX_STEM_BYTES:
         stem = stem[:-1].rstrip(". ")
     return stem or "document"
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while block := f.read(chunk):
+            h.update(block)
+    return h.hexdigest()
 
 
 class Store:
@@ -71,6 +86,28 @@ class Store:
             manifest = self._read()
             manifest["docs"][entry["id"]] = entry
             self._write(manifest)
+
+    def find_by_sha(self, digest: str) -> dict | None:
+        """The doc already holding these bytes, or None.
+
+        Entries written before content hashing gain their `sha256` here, on the first
+        lookup, so an existing library starts deduplicating without a migration step.
+        """
+        with self._lock:
+            manifest = self._read()
+            hit, dirty = None, False
+            for doc in manifest["docs"].values():
+                if not doc.get("sha256"):
+                    src = self.root / (doc.get("source") or "")
+                    if not src.is_file():
+                        continue
+                    doc["sha256"] = sha256_file(src)
+                    dirty = True
+                if hit is None and doc["sha256"] == digest:
+                    hit = doc
+            if dirty:
+                self._write(manifest)
+            return hit
 
     def delete_doc(self, doc_id: str) -> bool:
         with self._lock:
@@ -122,6 +159,7 @@ class Store:
             "options": options,
             "device": result.get("device"),
             "seconds": round(seconds, 1),
+            "sha256": sha256_file(Path(result["source"])) if result.get("source") else None,
             "source": store.relativize(result.get("source")),
             "parse_dir": store.relativize(result.get("parse_dir")),
             "markdown_path": store.relativize(result.get("markdown_path")),

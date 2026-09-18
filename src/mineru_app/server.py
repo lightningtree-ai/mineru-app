@@ -19,7 +19,7 @@ from . import __version__
 from .export import build_doc_zip, build_export_zip
 from .jobs import JobManager, sanitize_options, sse_format
 from .processing import SUPPORTED_SUFFIXES
-from .store import Store
+from .store import Store, sha256_bytes
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -61,18 +61,32 @@ async def create_jobs(files: list[UploadFile], options: str = Form("{}")):
     except (ValueError, json.JSONDecodeError) as e:
         raise HTTPException(400, f"Bad options: {e}")
 
-    jobs, skipped = [], []
+    jobs, skipped, duplicates = [], [], []
+    batch: dict[str, str] = {}   # sha -> name, for repeats within this upload
     for f in files:
         name = Path(f.filename or "upload").name
         if Path(name).suffix.lower() not in SUPPORTED_SUFFIXES:
             skipped.append(name)
             continue
+        data = await f.read()
+        # One paper reaches the library under a publisher filename and a Zotero one.
+        # Match on content so the second arrival costs nothing.
+        digest = sha256_bytes(data)
+        if digest in batch:
+            duplicates.append({"name": name, "existing_name": batch[digest], "doc_id": None})
+            continue
+        existing = store.find_by_sha(digest)
+        if existing:
+            duplicates.append({"name": name, "existing_name": existing["original_name"],
+                               "doc_id": existing["id"]})
+            continue
+        batch[digest] = name
         doc_id = store.new_doc_id()
-        dest = store.save_upload(doc_id, name, await f.read())
+        dest = store.save_upload(doc_id, name, data)
         jobs.append(manager.submit(doc_id, name, dest, opts).public())
-    if not jobs and skipped:
+    if not jobs and skipped and not duplicates:
         raise HTTPException(400, f"No supported files; skipped: {', '.join(skipped)}")
-    return {"jobs": jobs, "skipped": skipped}
+    return {"jobs": jobs, "skipped": skipped, "duplicates": duplicates}
 
 
 @app.get("/api/jobs")

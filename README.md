@@ -69,6 +69,9 @@ folder, an Obsidian vault, etc.
 Processed documents persist in `./data/` (uploads, outputs, `manifest.json`) and the
 library survives restarts. Override the location with `--data DIR` or `MINERU_APP_DATA`.
 
+Uploads are matched by SHA-256. The same paper arriving under a publisher filename and a
+Zotero one is parsed once, and the drop zone names the document already in the library.
+
 ```
 mineru-app --help
   --host 127.0.0.1   bind address (localhost only by default)
@@ -107,9 +110,14 @@ CLI options: `-t/--tier` (`flash`/`basic`/`standard`/`advanced`, default `basic`
 ## Output layout
 
 For `paper.pdf` the app writes `markdown.md`, `content_list.json` (ordered structured
-blocks with page numbers), `middle_json.json` (full layout model), `model_output.json`
-and `images/` into `<output>/<stem>/<tier>/`. Images are written as files, so the
-Markdown references `images/<name>.jpg` rather than inlining base64.
+blocks with page numbers), `structured_content.json` (MinerU's page tree) and `images/`
+into `<output>/<stem>/<tier>/`. Images are written as files, so the Markdown references
+`images/<name>.jpg` rather than inlining base64.
+
+MinerU also writes `middle_json.json` and `model_output.json`. Nothing here reads either,
+and under MinerU 3.x the equivalent files grew to 753 MB across a 236-document library, so
+the app deletes them when a job finishes. Set `MINERU_APP_KEEP_INTERMEDIATE=1` to keep
+them for an upstream bug report.
 
 ## How it works
 
