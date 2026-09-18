@@ -33,11 +33,12 @@ the CUDA toolkit). `uv run mineru-app` starts the server on <http://127.0.0.1:80
 opens your browser.
 
 > **First document is slow**: MinerU downloads its layout/formula/table/OCR models from
-> HuggingFace into `~/.cache` on first use (a few GB). After that, everything is offline
-> and fast — the models stay loaded between documents.
+> HuggingFace into `~/.mineru` on first use (~850 MB for the `basic` tier, more if you
+> pick `standard` or `advanced`). After that, everything is offline and fast — the models
+> stay loaded between documents. The `flash` tier needs no models at all.
 >
 > The worker process holding them is recycled every 10 documents (and whenever you change
-> an option that needs different models, e.g. language or backend), which costs one model
+> an option that needs different models, i.e. tier or device), which costs one model
 > reload. That's deliberate: the inference stack leaks memory steadily across documents,
 > and recycling is what keeps a long batch from growing without bound. Raise or lower it
 > with `MINERU_APP_WORKER_MAX_JOBS`.
@@ -99,15 +100,16 @@ blocks   = result["content_list"]     # structured blocks: text / image / table 
 results = preprocess(["a.pdf", "b.pdf"], output_dir="output")
 ```
 
-CLI options: `-l/--lang`, `-b/--backend` (`pipeline` | `vlm-transformers`), `-m/--method`
-(`auto`/`txt`/`ocr`), `--no-formula`, `--no-table`, `-s/-e` page range, `--device`
+CLI options: `-t/--tier` (`flash`/`basic`/`standard`/`advanced`, default `basic`),
+`-m/--ocr-mode` (`auto`/`txt`/`ocr`), `--image-analysis`, `-s/-e` page range, `--device`
 (`cuda`/`mps`/`cpu`, default auto-detect), `--json`.
 
 ## Output layout
 
-For `paper.pdf`, MinerU writes `paper.md`, `paper_content_list.json` (ordered structured
-blocks with page numbers), `paper_middle.json` (full layout model), and `images/` into
-`<output>/<stem>/<method>/` (`office/` for docx/pptx/xlsx, `vlm/` for VLM backends).
+For `paper.pdf` the app writes `markdown.md`, `content_list.json` (ordered structured
+blocks with page numbers), `middle_json.json` (full layout model), `model_output.json`
+and `images/` into `<output>/<stem>/<tier>/`. Images are written as files, so the
+Markdown references `images/<name>.jpg` rather than inlining base64.
 
 ## How it works
 
@@ -116,7 +118,8 @@ blocks with page numbers), `paper_middle.json` (full layout model), and `images/
   models load once and stay warm. Live updates stream to the UI over SSE.
 - **Frontend**: no-build vanilla JS ([src/mineru_app/static/](src/mineru_app/static/))
   with vendored `marked`, KaTeX, and pdf.js — works fully offline, no Node required.
-- **Processing**: [processing.py](src/mineru_app/processing.py) wraps MinerU's `do_parse`;
+- **Processing**: [processing.py](src/mineru_app/processing.py) wraps MinerU's
+  `mineru.parser.parse`;
   device auto-detects `cuda → mps → cpu` (`PYTORCH_ENABLE_MPS_FALLBACK` is set on macOS so
   unsupported MPS ops fall back to CPU instead of crashing).
 
