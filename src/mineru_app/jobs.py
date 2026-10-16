@@ -61,6 +61,47 @@ def _model_signature(options: dict) -> tuple:
     return tuple(options.get(k) for k in _MODEL_OPTION_KEYS)
 
 
+# A job that runs past its limit is killed and marked failed, so one document MinerU
+# never finishes can't hold the queue for ever (one sat 19 h in a docvortex loop).
+# Measured on 222 basic-tier jobs: all but one used under half of this budget,
+# including a 1020-page book at 6970 s. The exception was a 9-page paper that took
+# 3737 s on MinerU 3.2.3, 97% of its limit. MINERU_APP_JOB_TIMEOUT replaces the
+# budget with a fixed number of seconds; 0 turns the limit off.
+JOB_TIMEOUT_BASE = 3600.0
+JOB_TIMEOUT_PER_PAGE = 30.0
+_JOB_TIMEOUT_FIXED = os.environ.get("MINERU_APP_JOB_TIMEOUT")
+JOB_TIMEOUT_FIXED = None if _JOB_TIMEOUT_FIXED is None else float(_JOB_TIMEOUT_FIXED)
+
+
+def _page_count(upload_path: str, options: dict) -> int:
+    """Pages this job will parse: the PDF's page count cut to the requested range.
+    Images and office files count as one page."""
+    if Path(upload_path).suffix.lower() != ".pdf":
+        return 1
+    try:
+        import pypdfium2  # a MinerU dependency, and cheap next to the models
+        doc = pypdfium2.PdfDocument(upload_path)
+        n = len(doc)
+        doc.close()
+    except Exception:
+        return 1
+    start = max(0, options.get("start_page") or 0)
+    end = options.get("end_page")
+    end = n - 1 if end is None else min(end, n - 1)
+    return max(1, end - start + 1)
+
+
+def _duration(seconds: float) -> str:
+    return f"{seconds / 60:.0f} min" if seconds >= 60 else f"{seconds:.0f} s"
+
+
+def job_timeout(upload_path: str, options: dict) -> float | None:
+    """Seconds this job may run before it is killed, or None for no limit."""
+    if JOB_TIMEOUT_FIXED is not None:
+        return JOB_TIMEOUT_FIXED or None
+    return JOB_TIMEOUT_BASE + JOB_TIMEOUT_PER_PAGE * _page_count(upload_path, options)
+
+
 def sanitize_options(raw: dict) -> dict:
     """Whitelist + type-check user-supplied processing options."""
     opts: dict = {}
@@ -92,6 +133,7 @@ class Job:
     error: str | None = None
     device: str | None = None
     progress: str | None = None  # last log/progress line from MinerU
+    timeout: float | None = None  # seconds of running before it is killed
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -365,7 +407,8 @@ class JobManager:
 
     def submit(self, doc_id: str, name: str, upload_path: Path, options: dict) -> Job:
         job = Job(id=uuid.uuid4().hex[:12], doc_id=doc_id, name=name,
-                  upload_path=str(upload_path), options=options)
+                  upload_path=str(upload_path), options=options,
+                  timeout=job_timeout(str(upload_path), options))
         with self._lock:
             self._jobs[job.id] = job
             self._pending.append(job.id)
@@ -390,11 +433,7 @@ class JobManager:
                 job.status = "cancelled"
                 job.finished_at = time.time()
             elif job.status == "running" and self._current == job_id:
-                proc, self._proc = self._proc, None  # next job spawns a fresh worker
-                self._current = None
-                job.status = "cancelled"
-                job.progress = None
-                job.finished_at = time.time()
+                proc = self._abort_current_locked(job, "cancelled")
             else:
                 return job.status
         _terminate_tree(proc)
@@ -418,6 +457,30 @@ class JobManager:
 
     def _publish(self, job: Job) -> None:
         self.bus.publish({"type": "job", "job": job.public()})
+
+    def _abort_current_locked(self, job: Job, status: str, error: str | None = None):
+        """Detach the running job and its worker. Returns the worker for the caller
+        to terminate outside the lock; the next job spawns a fresh one."""
+        proc, self._proc = self._proc, None
+        self._current = None
+        job.status = status
+        job.error = error
+        job.progress = None
+        job.finished_at = time.time()
+        return proc
+
+    def _enforce_timeout(self) -> None:
+        with self._lock:
+            job = self._jobs.get(self._current) if self._current else None
+            if (job is None or job.timeout is None or job.started_at is None
+                    or time.time() - job.started_at < job.timeout):
+                return
+            proc = self._abort_current_locked(job, "failed", (
+                f"Timed out after {_duration(job.timeout)}. MinerU may be stuck on "
+                "this file. Set MINERU_APP_JOB_TIMEOUT (seconds) to change the limit."))
+        _terminate_tree(proc)
+        self._publish(job)
+        self._dispatch()
 
     def _ensure_worker_locked(self, signature: tuple) -> None:
         if self._proc is not None and self._proc.is_alive():
@@ -485,6 +548,8 @@ class JobManager:
     def _pump(self) -> None:
         """Consume worker events; detect a worker that died mid-job."""
         while True:
+            # Every pass, not only on a quiet queue: a stuck job can keep chattering.
+            self._enforce_timeout()
             event_q = self._event_q
             if event_q is None:
                 time.sleep(0.5)
