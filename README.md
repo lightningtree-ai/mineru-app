@@ -141,3 +141,8 @@ them for an upstream bug report.
 - **A document fails** — the queue entry shows the error; the rest of the batch
   continues. The `pipeline` backend supports PDFs/images on all platforms; office files
   are converted natively (no LibreOffice needed).
+- **A document fails with "Timed out"** — each job may run for 1 hour plus 30 s per
+  page. A job past that limit is killed and the queue moves on. MinerU has hung forever
+  on some PDFs before, so a timeout usually means the file hit a parser bug. If the
+  document is just slow, for example a VLM tier on CPU, set `MINERU_APP_JOB_TIMEOUT` to
+  a fixed limit in seconds. `0` turns the limit off.

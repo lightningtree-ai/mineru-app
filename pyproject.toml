@@ -8,8 +8,14 @@ dependencies = [
     # 3.3 and 3.4 are skipped deliberately: 3.4.0+ deletes chemical subscript digits
     # (Li2MnO3 -> "Li MnO", filed as opendatalab/MinerU#5540) and 3.3.0+ drops a letter
     # from ff/ffi ligatures. 4.0.2 has neither fault and scores better than 3.2.3 did.
+    # Pinned because 4.0.12 swaps abbreviations for real elements inside formulae:
+    # "LiTMO2" became LiTiO2 and "LiMeO2" became LiMoO2 in the gate papers.
     # [torch] is explicit: the base package only pulls torch on macOS ARM.
-    "mineru[torch]>=4.0.2",
+    "mineru[torch]==4.0.2",
+    # The docvortex 0.4.x that 4.0.2 resolves to can loop forever on a text line it
+    # keeps moving between two columns. 0.5.16 rewrote that pass, sits inside 4.0.2's
+    # declared range, and leaves the gate papers' output unchanged.
+    "docvortex>=0.5.16",
     # Direct deps of the web server (also pulled in transitively by mineru, but
     # declared explicitly since we import them).
     "fastapi>=0.115",
