@@ -10,6 +10,7 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -180,8 +181,15 @@ def doc_zip(doc_id: str):
     buf = build_doc_zip(store, doc_id)
     if buf is None:
         raise HTTPException(404, "No output for this document")
-    return StreamingResponse(buf, media_type="application/zip", headers={
-        "Content-Disposition": f'attachment; filename="{doc["stem"]}.zip"'})
+    # HTTP headers are Latin-1, and paper titles often aren't ("Li‐Ion" has U+2010).
+    # RFC 6266 carries those as filename*, the form FileResponse uses for /source.
+    name = f'{doc["stem"]}.zip'
+    if quote(name) == name:
+        disposition = f'attachment; filename="{name}"'
+    else:
+        disposition = f"attachment; filename*=utf-8''{quote(name)}"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": disposition})
 
 
 @app.post("/api/docs/{doc_id}/reveal")
