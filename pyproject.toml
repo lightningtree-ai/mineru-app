@@ -3,19 +3,17 @@ name = "mineru-app"
 version = "0.1.0"
 description = "Local drag-and-drop web app for preprocessing PDFs (and other docs) into Markdown + structured JSON with MinerU."
 readme = "README.md"
-requires-python = ">=3.10,<3.15"
+requires-python = ">=3.11,<3.15"
 dependencies = [
-    # 3.3 and 3.4 are skipped deliberately: 3.4.0+ deletes chemical subscript digits
-    # (Li2MnO3 -> "Li MnO", filed as opendatalab/MinerU#5540) and 3.3.0+ drops a letter
-    # from ff/ffi ligatures. 4.0.2 has neither fault and scores better than 3.2.3 did.
-    # Pinned because 4.0.12 swaps abbreviations for real elements inside formulae:
-    # "LiTMO2" became LiTiO2 and "LiMeO2" became LiMoO2 in the gate papers.
-    # [torch] is explicit: the base package only pulls torch on macOS ARM.
-    "mineru[torch]==4.0.2",
-    # The docvortex 0.4.x that 4.0.2 resolves to can loop forever on a text line it
-    # keeps moving between two columns. 0.5.16 rewrote that pass, sits inside 4.0.2's
-    # declared range, and leaves the gate papers' output unchanged.
-    "docvortex>=0.5.16",
+    # Pinned exactly: patch releases have broken chemistry more than once. 3.4.0+
+    # deletes subscript digits (Li2MnO3 -> "Li MnO", opendatalab/MinerU#5540), 3.3.0+
+    # drops a letter from ff/ffi ligatures, and 4.0.12 swaps abbreviations for real
+    # elements ("LiTMO2" -> LiTiO2, "LiMeO2" -> LiMoO2). 4.1.7 carries the fix for the
+    # last one and gives the same formula counts as 4.0.2 on the five gate papers.
+    # Re-run those papers before moving this pin.
+    # [torch] is explicit: the base package only pulls torch on macOS ARM. Without it,
+    # 4.1 runs Windows on ONNX/DirectML instead of the CUDA torch installed below.
+    "mineru[torch]==4.1.7",
     # Direct deps of the web server (also pulled in transitively by mineru, but
     # declared explicitly since we import them).
     "fastapi>=0.115",
